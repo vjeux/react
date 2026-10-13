@@ -3738,6 +3738,31 @@ impl MutVisitor for RenameIdentifierVisitor<'_> {
     }
 }
 
+/// Applies the environment flags the Babel plugin derives from its JS-side checks
+/// (`Babel/BabelPlugin.ts`): a pipeline that uses Reanimated turns on
+/// `enableCustomTypeDefinitionForReanimated`, and a development build turns on
+/// `enableResetCacheOnSourceFileChanges` unless the config set it to `false`, so Fast Refresh
+/// resets a component's memo cache when its source file changes. The JS shim resolves the
+/// checks into `enable_reanimated` and `is_dev`; this is where they take effect.
+fn apply_js_resolved_flags(mut options: PluginOptions) -> PluginOptions {
+    if options.enable_reanimated {
+        options
+            .environment
+            .enable_custom_type_definition_for_reanimated = true;
+    }
+    if options.is_dev
+        && options
+            .environment
+            .enable_reset_cache_on_source_file_changes
+            .is_none()
+    {
+        options
+            .environment
+            .enable_reset_cache_on_source_file_changes = Some(true);
+    }
+    options
+}
+
 /// Main entry point for the React Compiler.
 ///
 /// Receives a full program AST, scope information (unused for now), and resolved options.
@@ -3752,6 +3777,8 @@ impl MutVisitor for RenameIdentifierVisitor<'_> {
 /// - processFn: per-function compilation with directive and suppression handling
 /// - applyCompiledFunctions: replace original functions with compiled versions
 pub fn compile_program(mut file: File, scope: ScopeInfo, options: PluginOptions) -> CompileResult {
+    let options = apply_js_resolved_flags(options);
+
     // Compute output mode once, up front
     let output_mode = CompilerOutputMode::from_opts(&options);
 
@@ -4201,5 +4228,80 @@ mod tests {
             debug: false,
         };
         assert!(!should_skip_compilation(&program, &options));
+    }
+
+    fn plugin_options(is_dev: bool, enable_reanimated: bool) -> PluginOptions {
+        PluginOptions {
+            should_compile: true,
+            enable_reanimated,
+            is_dev,
+            filename: None,
+            compilation_mode: "infer".to_string(),
+            panic_threshold: "none".to_string(),
+            target: super::super::plugin_options::CompilerTarget::Version("19".to_string()),
+            gating: None,
+            dynamic_gating: None,
+            no_emit: false,
+            output_mode: None,
+            eslint_suppression_rules: None,
+            flow_suppressions: true,
+            ignore_use_no_forget: false,
+            custom_opt_out_directives: None,
+            environment: EnvironmentConfig::default(),
+            source_code: None,
+            profiling: false,
+            debug: false,
+        }
+    }
+
+    #[test]
+    fn test_dev_mode_enables_reset_cache_on_source_file_changes() {
+        let options = apply_js_resolved_flags(plugin_options(true, false));
+        assert_eq!(
+            options
+                .environment
+                .enable_reset_cache_on_source_file_changes,
+            Some(true)
+        );
+
+        let options = apply_js_resolved_flags(plugin_options(false, false));
+        assert_eq!(
+            options
+                .environment
+                .enable_reset_cache_on_source_file_changes,
+            None
+        );
+    }
+
+    #[test]
+    fn test_dev_mode_keeps_an_explicit_reset_cache_opt_out() {
+        let mut options = plugin_options(true, false);
+        options
+            .environment
+            .enable_reset_cache_on_source_file_changes = Some(false);
+        let options = apply_js_resolved_flags(options);
+        assert_eq!(
+            options
+                .environment
+                .enable_reset_cache_on_source_file_changes,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_reanimated_pipeline_enables_custom_type_definition() {
+        let options = apply_js_resolved_flags(plugin_options(false, true));
+        assert!(
+            options
+                .environment
+                .enable_custom_type_definition_for_reanimated
+        );
+
+        let options = apply_js_resolved_flags(plugin_options(false, false));
+        assert!(
+            !options
+                .environment
+                .enable_custom_type_definition_for_reanimated
+        );
     }
 }

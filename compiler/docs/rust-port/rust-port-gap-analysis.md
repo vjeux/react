@@ -45,15 +45,13 @@ Current test status: Pass 1717/1717, Code 1716/1717, Snap 1717/1718.
 - **Rust**: `run_pipeline_passes` skips: `validateContextVariableLValues`, `validateUseMemo`, `validateNoDerivedComputationsInEffects/_exp`, `validateNoSetStateInEffects`, `validateNoJSXInTryStatement`, `validateNoCapitalizedCalls`, `validateStaticComponents`
 - Also missing: `has_errors()` check at end, `memo_cache_import` registration
 
-### 10. Reanimated flag injection missing
+### 10. Reanimated flag injection missing (FIXED)
 - **TS**: `Babel/BabelPlugin.ts:48-53` — `injectReanimatedFlag(opts)` sets `enableCustomTypeDefinitionForReanimated = true`
-- **Rust**: Detects reanimated but doesn't inject the flag into environment config
-- Custom type definitions for reanimated shared values won't activate.
+- **Rust**: `program.rs` `apply_js_resolved_flags` sets it from the JS-resolved `enable_reanimated`.
 
-### 11. Dev-mode `enableResetCacheOnSourceFileChanges` injection missing
+### 11. Dev-mode `enableResetCacheOnSourceFileChanges` injection missing (FIXED)
 - **TS**: `Babel/BabelPlugin.ts:54-65` — auto-enables in dev mode
-- **Rust**: MISSING
-- Fast refresh cache-reset code won't generate in dev mode unless explicitly configured.
+- **Rust**: `program.rs` `apply_js_resolved_flags` sets it from the JS-resolved `is_dev` unless the config set it to `false`, so integrations that pass `is_dev` (the NAPI plugin, `swc_ecma_react_compiler` hosts) get the Fast Refresh cache-reset guard without configuring it.
 
 ### 12. Outlined functions not re-queued for compilation
 - **TS**: `Entrypoint/Program.ts:476-501` — outlined functions with a React function type are pushed back into the compilation queue
