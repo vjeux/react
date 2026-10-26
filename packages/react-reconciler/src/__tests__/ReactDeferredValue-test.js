@@ -1193,12 +1193,26 @@ describe('ReactDeferredValue', () => {
     // for B: it must not be retried again because the spawned task committed.
     resolveText('A');
     const {settled, log} = await flushUntilIdle(50);
-    expect(log.filter(entry => entry === 'Suspend! [B]').length).toBe(1);
+    const attempts = log.filter(entry => entry === 'Suspend! [B]').length;
+    if (gate(flags => flags.alwaysThrottleRetries)) {
+      expect(attempts).toBe(1);
+    } else {
+      // Without throttling, the retry commits the fallback right away, and the
+      // deferred task spawned by that commit renders the content again with
+      // the final value, which also waits for B. This path never marks the
+      // retry suspended, so it did not loop before the fix either.
+      expect(attempts).toBe(3);
+    }
     expect(settled).toBe(true);
     expect(root).toMatchRenderedOutput('Loading...');
 
     await act(() => resolveText('B'));
-    assertLog(['Initial', 'B', 'Final']);
+    if (gate(flags => flags.alwaysThrottleRetries)) {
+      assertLog(['Initial', 'B', 'Final']);
+    } else {
+      // The deferred task is the render waiting for B, with the final value.
+      assertLog(['Final', 'B']);
+    }
     expect(root).toMatchRenderedOutput('FinalB');
   });
 });
