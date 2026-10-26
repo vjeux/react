@@ -19,6 +19,7 @@ let Suspense;
 let Activity;
 let assertLog;
 let waitForPaint;
+let waitForMicrotasks;
 let textCache;
 
 describe('ReactDeferredValue', () => {
@@ -39,6 +40,7 @@ describe('ReactDeferredValue', () => {
     const InternalTestUtils = require('internal-test-utils');
     assertLog = InternalTestUtils.assertLog;
     waitForPaint = InternalTestUtils.waitForPaint;
+    waitForMicrotasks = InternalTestUtils.waitForMicrotasks;
 
     textCache = new Map();
   });
@@ -1142,5 +1144,61 @@ describe('ReactDeferredValue', () => {
       'B: updated',
     ]);
     expect(root).toMatchRenderedOutput('A:updatedupdated');
+  });
+  // Flushes the scheduler, a bounded number of times, until it has no work
+  // left, and returns what was logged. A root that keeps retrying a suspended
+  // render never settles.
+  async function flushUntilIdle(maxIterations) {
+    const log = [];
+    for (let i = 0; i < maxIterations; i++) {
+      await waitForMicrotasks();
+      if (!Scheduler.unstable_hasPendingWork()) {
+        return {settled: true, log};
+      }
+      Scheduler.unstable_flushNumberOfYields(10);
+      log.push(...Scheduler.unstable_clearLog());
+    }
+    await waitForMicrotasks();
+    return {settled: !Scheduler.unstable_hasPendingWork(), log};
+  }
+
+  it('a Suspense retry that suspends again after spawning a deferred task waits for its data', async () => {
+    function Deferred() {
+      return <Text text={useDeferredValue('Final', 'Initial')} />;
+    }
+
+    function Content() {
+      readText('A');
+      return (
+        <>
+          <Deferred />
+          <AsyncText text="B" />
+        </>
+      );
+    }
+
+    const root = ReactNoop.createRoot();
+    await act(() =>
+      root.render(
+        <Suspense fallback={<Text text="Loading..." />}>
+          <Content />
+        </Suspense>,
+      ),
+    );
+    Scheduler.unstable_clearLog();
+    expect(root).toMatchRenderedOutput('Loading...');
+
+    // Resolving A retries the boundary. Content mounts the useDeferredValue,
+    // which spawns a deferred task, and then B suspends. The retry has to wait
+    // for B: it must not be retried again because the spawned task committed.
+    resolveText('A');
+    const {settled, log} = await flushUntilIdle(50);
+    expect(log.filter(entry => entry === 'Suspend! [B]').length).toBe(1);
+    expect(settled).toBe(true);
+    expect(root).toMatchRenderedOutput('Loading...');
+
+    await act(() => resolveText('B'));
+    assertLog(['Initial', 'B', 'Final']);
+    expect(root).toMatchRenderedOutput('FinalB');
   });
 });
