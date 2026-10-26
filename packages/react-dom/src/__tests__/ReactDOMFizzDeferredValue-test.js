@@ -24,6 +24,7 @@ let act;
 let serverAct;
 let assertLog;
 let waitForPaint;
+let waitForMicrotasks;
 let container;
 let React;
 let Scheduler;
@@ -46,6 +47,7 @@ describe('ReactDOMFizzForm', () => {
     Suspense = React.Suspense;
     assertLog = require('internal-test-utils').assertLog;
     waitForPaint = require('internal-test-utils').waitForPaint;
+    waitForMicrotasks = require('internal-test-utils').waitForMicrotasks;
     container = document.createElement('div');
     document.body.appendChild(container);
   });
@@ -191,4 +193,106 @@ describe('ReactDOMFizzForm', () => {
       expect(cRef.current).toBe(serverRenderedC);
     },
   );
+  // Flushes the scheduler, a bounded number of times, until it has no work
+  // left, and returns what was logged. A root that keeps retrying a suspended
+  // render never settles.
+  async function flushUntilIdle(maxIterations) {
+    const log = [];
+    for (let i = 0; i < maxIterations; i++) {
+      await waitForMicrotasks();
+      if (!Scheduler.unstable_hasPendingWork()) {
+        return {settled: true, log};
+      }
+      Scheduler.unstable_flushNumberOfYields(10);
+      log.push(...Scheduler.unstable_clearLog());
+    }
+    await waitForMicrotasks();
+    return {settled: !Scheduler.unstable_hasPendingWork(), log};
+  }
+
+  async function shellSuspendsDuringHydration(hydrateInTransition) {
+    let suspendOnClient = false;
+    let shellResolved = false;
+    let resolveShell;
+    const shellPromise = new Promise(resolve => {
+      resolveShell = resolve;
+    });
+    shellPromise.then(() => {
+      shellResolved = true;
+    });
+
+    function Deferred() {
+      const text = useDeferredValue('Final', 'Initial');
+      return <Text text={text} />;
+    }
+
+    function Shell() {
+      if (suspendOnClient && !shellResolved) {
+        Scheduler.log('Suspend! [Shell]');
+        throw shellPromise;
+      }
+      return <Text text="Shell" />;
+    }
+
+    function App() {
+      return (
+        <div>
+          <span>
+            <Deferred />
+          </span>
+          <span>
+            <Shell />
+          </span>
+        </div>
+      );
+    }
+
+    const stream = await serverAct(() =>
+      ReactDOMServer.renderToReadableStream(<App />),
+    );
+    await readIntoContainer(stream);
+    assertLog(['Initial', 'Shell']);
+
+    // On the client the shell suspends during hydration, after the
+    // useDeferredValue above it has spawned a deferred lane.
+    suspendOnClient = true;
+    if (hydrateInTransition) {
+      React.startTransition(() => {
+        ReactDOMClient.hydrateRoot(container, <App />);
+      });
+    } else {
+      ReactDOMClient.hydrateRoot(container, <App />);
+    }
+    const {settled, log} = await flushUntilIdle(50);
+    const attempts = log.filter(entry => entry === 'Suspend! [Shell]').length;
+    // The root waits for the promise: it does not keep retrying the suspended
+    // hydration because the spawned deferred lane committed.
+    expect(attempts).toBeLessThanOrEqual(2);
+    expect(settled).toBe(true);
+    expect(getVisibleChildren(container)).toEqual(
+      <div>
+        <span>Initial</span>
+        <span>Shell</span>
+      </div>,
+    );
+
+    await act(() => resolveShell());
+    const afterResolve = Scheduler.unstable_clearLog();
+    expect(afterResolve).toContain('Shell');
+    expect(afterResolve[afterResolve.length - 1]).toBe('Final');
+    expect(getVisibleChildren(container)).toEqual(
+      <div>
+        <span>Final</span>
+        <span>Shell</span>
+      </div>,
+    );
+  }
+
+  it('does not spin when the shell suspends during a transition hydration that spawned a deferred lane', async () => {
+    await shellSuspendsDuringHydration(true);
+  });
+
+  it('does not spin when the shell suspends during a default hydration that spawned a deferred lane', async () => {
+    await shellSuspendsDuringHydration(false);
+  });
 });
